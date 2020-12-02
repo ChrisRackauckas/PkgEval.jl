@@ -42,7 +42,8 @@ end
 function runner_sandboxed_julia(install::String, args=``; interactive=true, tty=true,
                                 name=nothing, cpus::Vector{Int}=Int[], tmpfs::Bool=true,
                                 storage=nothing, cache=nothing, sysimage=nothing,
-                                runner="ubuntu", depot="/home/pkgeval/.julia")
+                                runner="ubuntu", depot="/home/pkgeval/.julia",
+                                xvfb::Bool=true)
     cmd = `docker run`
 
     # expose any available GPUs if they are available
@@ -105,7 +106,11 @@ function runner_sandboxed_julia(install::String, args=``; interactive=true, tty=
         cmd = `$cmd --name $name`
     end
 
-    `$cmd --rm newpkgeval:$runner xvfb-run /opt/julia/bin/julia $args`
+    if xvfb
+        `$cmd --rm newpkgeval:$runner xvfb-run /opt/julia/bin/julia $args`
+    else
+        `$cmd --rm newpkgeval:$runner /opt/julia/bin/julia $args`
+    end
 end
 
 """
@@ -409,7 +414,8 @@ function run_compiled_test(install::String, pkg; compile_time_limit=10*60, cache
     container_lock = ReentrantLock()
 
     p = run_sandboxed_julia(install, cmd; runner="ubuntu", stdout=output, stderr=output,
-                            tty=false, wait=false, name=container, cache=cache, kwargs...)
+                            tty=false, wait=false, name=container, cache=cache, xvfb=false,
+                            kwargs...)
 
     # kill on timeout
     t = Timer(compile_time_limit) do timer
