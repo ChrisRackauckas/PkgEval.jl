@@ -40,7 +40,7 @@ end
 function runner_sandboxed_julia(install::String, args=``; interactive=true, tty=true,
                                 name=nothing, cpus::Vector{Int}=Int[], tmpfs::Bool=true,
                                 storage=nothing, cache=nothing, sysimage=nothing,
-                                runner="ubuntu")
+                                runner="ubuntu", depot="/home/pkgeval/.julia")
     cmd = `docker run`
 
     # expose any available GPUs if they are available
@@ -55,7 +55,7 @@ function runner_sandboxed_julia(install::String, args=``; interactive=true, tty=
     @assert isdir(registry_path)
     cmd = ```$cmd --mount type=bind,source=$julia_path,target=/opt/julia,readonly
                   --mount type=bind,source=$registry_path,target=/usr/local/share/julia/registries,readonly
-                  --env JULIA_DEPOT_PATH="::/usr/local/share/julia"
+                  --env JULIA_DEPOT_PATH="$depot:/usr/local/share/julia"
                   --env JULIA_PKG_PRECOMPILE_AUTO=0
                   --env JULIA_PKG_SERVER
           ```
@@ -83,7 +83,7 @@ function runner_sandboxed_julia(install::String, args=``; interactive=true, tty=
         cmd = `$cmd --tmpfs /home/pkgeval:exec,uid=1000,gid=1000`
         # FIXME: tmpfs mounts don't copy uid/gid back, so we need to correct this manually
         #        https://github.com/opencontainers/runc/issues/1647
-        # FIXME: this also breaks mounting artifacts in .julia directly
+        # FIXME: this also breaks mounting artifacts in the depot directly
     end
 
     # restrict resource usage
@@ -135,11 +135,11 @@ function run_sandboxed_test(install::String, pkg; log_limit = 2^20 #= 1 MB =#,
             versioninfo()
             println()
 
-            mkpath(".julia")
+            mkpath(first(DEPOT_PATH))
 
             # global storage of downloaded artifacts
             mkpath("/storage/artifacts")
-            symlink("/storage/artifacts", ".julia/artifacts")
+            symlink("/storage/artifacts", joinpath(first(DEPOT_PATH), "artifacts"))
 
             using Pkg
             Pkg.UPDATED_REGISTRY_THIS_SESSION[] = true
@@ -374,11 +374,11 @@ function run_compiled_test(install::String, pkg; compile_time_limit=10*60, cache
         versioninfo()
         println()
 
-        mkpath(".julia")
+        mkpath(first(DEPOT_PATH))
 
         # global storage of downloaded artifacts
         mkpath("/storage/artifacts")
-        symlink("/storage/artifacts", ".julia/artifacts")
+        symlink("/storage/artifacts", joinpath(first(DEPOT_PATH), "artifacts"))
 
         using Pkg
         Pkg.UPDATED_REGISTRY_THIS_SESSION[] = true
@@ -437,7 +437,7 @@ function run_compiled_test(install::String, pkg; compile_time_limit=10*60, cache
     end
 
     return run_sandboxed_test(install, pkg; runner="arch", sysimage=sysimage_path,
-                              cache=cache, kwargs...)
+                              depot="/home/pkgeval/.another_julia", cache=cache, kwargs...)
 end
 
 function query_container(container)
