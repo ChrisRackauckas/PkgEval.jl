@@ -45,8 +45,8 @@ end
 end
 
 @testset "reporting" begin
-    lts = v"1.0.5"
-    stable = v"1.2.0"
+    lts = Configuration(julia=v"1.0.5")
+    stable = Configuration(julia=v"1.2.0")
     results = PkgEval.run([lts, stable], ["Example"])
     PkgEval.compare(results, lts, stable)
 end

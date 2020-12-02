@@ -1,3 +1,5 @@
+export Configuration
+
 function prepare_runner()
     for runner in ("ubuntu", "arch")
         cd(joinpath(dirname(@__DIR__), "runner.$runner")) do
@@ -460,18 +462,28 @@ function kill_container(container)
     Base.run(cmd)
 end
 
-function run(julia_versions::Vector{VersionNumber}, pkgs::Vector;
+Base.@kwdef struct Configuration
+    julia::VersionNumber = Base.VERSION
+    compiled::Bool = false
+    # TODO: depwarn, checkbounds, etc
+    # TODO: also move buildflags here?
+end
+
+# behave as a scalar in broadcast expressions
+Base.broadcastable(x::Configuration) = Ref(x)
+
+function run(configs::Vector{Configuration}, pkgs::Vector;
              ninstances::Integer=Sys.CPU_THREADS, retries::Integer=2, kwargs...)
     # here we deal with managing execution: spawning workers, output, result I/O, etc
 
     prepare_runner()
 
     # Julia installation and local cache
-    julia_environments = Dict{VersionNumber,Tuple{String,String}}()
-    for julia in julia_versions
-        install = prepare_julia(julia)
+    instantiated_configs = Dict{Configuration,Tuple{String,String}}()
+    for config in configs
+        install = prepare_julia(config.julia)
         cache = mktempdir()
-        julia_environments[julia] = (install, cache)
+        instantiated_configs[config] = (install, cache)
     end
 
     # global storage
@@ -479,7 +491,7 @@ function run(julia_versions::Vector{VersionNumber}, pkgs::Vector;
     mkpath(storage)
 
     # make sure data is writable
-    for (julia, (install,cache)) in julia_environments
+    for (config, (install,cache)) in instantiated_configs
         Base.run(```docker run --mount type=bind,source=$storage,target=/storage
                                --mount type=bind,source=$cache,target=/cache
                                newpkgeval:ubuntu
@@ -501,16 +513,14 @@ function run(julia_versions::Vector{VersionNumber}, pkgs::Vector;
         JSON.parse(body)
     end
 
-    jobs = [(julia=julia, install=install, cache=cache,
-             pkg=pkg) for (julia,(install,cache)) in julia_environments
-                      for pkg in pkgs]
+    jobs = vec(collect(Iterators.product(instantiated_configs, pkgs)))
 
     # use a random test order to (hopefully) get a more reasonable ETA
     shuffle!(jobs)
 
     njobs = length(jobs)
     ninstances = min(njobs, ninstances)
-    running = Vector{Union{Nothing, eltype(jobs)}}(nothing, ninstances)
+    running = Vector{Any}(nothing, ninstances)
     times = DateTime[now() for i = 1:ninstances]
     all_workers = Task[]
 
@@ -572,7 +582,8 @@ function run(julia_versions::Vector{VersionNumber}, pkgs::Vector;
                 str = if job === nothing
                     " #$i: -------"
                 else
-                    " #$i: $(job.pkg.name) @ $(job.julia) ($(runtimestr(times[i])))"
+                    config, pkg = job
+                    " #$i: $(pkg.name) @ $(config.julia) ($(runtimestr(times[i])))"
                 end
                 if i%2 == 1 && i < ninstances
                     print(io, rpad(str, 50))
@@ -589,7 +600,7 @@ function run(julia_versions::Vector{VersionNumber}, pkgs::Vector;
         end
     end
 
-    result = DataFrame(julia = VersionNumber[],
+    result = DataFrame(config = Configuration[],
                        name = String[],
                        uuid = UUID[],
                        version = Union{Missing,VersionNumber}[],
@@ -612,44 +623,45 @@ function run(julia_versions::Vector{VersionNumber}, pkgs::Vector;
     end
 
     # Workers
+    # TODO: we don't want to do this for both. but rather one of the builds is compiled, the other not...
     try @sync begin
         for i = 1:ninstances
             push!(all_workers, @async begin
                 try
                     while !isempty(jobs) && !done
-                        job = pop!(jobs)
+                        (config, (install, cache)), pkg = pop!(jobs)
                         times[i] = now()
-                        running[i] = job
+                        running[i] = (config, pkg)
 
                         # can we even test this package?
                         julia_supported = Dict{VersionNumber,Bool}()
                         if VERSION >= v"1.5"
                             ctx = Pkg.Types.Context()
-                            pkg_version_info = Pkg.Operations.load_versions(ctx, job.pkg.path)
+                            pkg_version_info = Pkg.Operations.load_versions(ctx, pkg.path)
                             pkg_versions = sort!(collect(keys(pkg_version_info)))
                             pkg_compat =
                                 Pkg.Operations.load_package_data(Pkg.Types.VersionSpec,
-                                                                 joinpath(job.pkg.path,
+                                                                 joinpath(pkg.path,
                                                                           "Compat.toml"),
                                                                  pkg_versions)
                             for (pkg_version, bounds) in pkg_compat
                                 if haskey(bounds, "julia")
                                     julia_supported[pkg_version] =
-                                        job.julia ∈ bounds["julia"]
+                                        config.julia ∈ bounds["julia"]
                                 end
                             end
                         else
-                            pkg_version_info = Pkg.Operations.load_versions(job.pkg.path)
+                            pkg_version_info = Pkg.Operations.load_versions(pkg.path)
                             pkg_compat =
                                 Pkg.Operations.load_package_data_raw(Pkg.Types.VersionSpec,
-                                                                     joinpath(job.pkg.path,
+                                                                     joinpath(pkg.path,
                                                                               "Compat.toml"))
                             for (version_range, bounds) in pkg_compat
                                 if haskey(bounds, "julia")
                                     for pkg_version in keys(pkg_version_info)
                                         if pkg_version in version_range
                                             julia_supported[pkg_version] =
-                                                job.julia ∈ bounds["julia"]
+                                                config.julia ∈ bounds["julia"]
                                         end
                                     end
                                 end
@@ -663,37 +675,43 @@ function run(julia_versions::Vector{VersionNumber}, pkgs::Vector;
                             supported = any(values(julia_supported))
                         end
                         if !supported
-                            push!(result, [job.julia, job.pkg.name, job.pkg.uuid, missing,
+                            push!(result, [config,
+                                           pkg.name, pkg.uuid, missing,
                                            :skip, :unsupported, 0, missing])
                             continue
-                        elseif job.pkg.name in skip_lists[job.pkg.registry]
-                            push!(result, [job.julia, job.pkg.name, job.pkg.uuid, missing,
+                        elseif pkg.name in skip_lists[pkg.registry]
+                            push!(result, [config,
+                                           pkg.name, pkg.uuid, missing,
                                            :skip, :explicit, 0, missing])
                             continue
-                        elseif endswith(job.pkg.name, "_jll")
-                            push!(result, [job.julia, job.pkg.name, job.pkg.uuid, missing,
+                        elseif endswith(pkg.name, "_jll")
+                            push!(result, [config,
+                                           pkg.name, pkg.uuid, missing,
                                            :skip, :jll, 0, missing])
                             continue
                         end
 
+                        runner = config.compiled ? run_compiled_test : run_sandboxed_test
+
                         # perform an initial run
                         pkg_version, status, reason, log =
-                            run_sandboxed_test(job.install, job.pkg; cache=job.cache,
-                                               storage=storage, cpus=[i-1], kwargs...)
+                            runner(install, pkg; cache=cache,
+                                   storage=storage, cpus=[i-1], kwargs...)
 
                         # certain packages are known to have flaky tests; retry them
                         for j in 1:retries
                             if status == :fail && reason == :test_failures &&
-                               job.pkg.name in retry_lists[job.pkg.registry]
+                               pkg.name in retry_lists[pkg.registry]
                                 times[i] = now()
                                 pkg_version, status, reason, log =
-                                    run_sandboxed_test(job.install, job.pkg; cache=job.cache,
-                                                       storage=storage, cpus=[i-1], kwargs...)
+                                    runner(install, pkg; cache=cache,
+                                           storage=storage, cpus=[i-1], kwargs...)
                             end
                         end
 
                         duration = (now()-times[i]) / Millisecond(1000)
-                        push!(result, [job.julia, job.pkg.name, job.pkg.uuid, pkg_version,
+                        push!(result, [config,
+                                       pkg.name, pkg.uuid, pkg_version,
                                        status, reason, duration, log])
                         running[i] = nothing
                     end
@@ -711,7 +729,7 @@ function run(julia_versions::Vector{VersionNumber}, pkgs::Vector;
         println()
 
         # clean-up
-        for (julia, (install,cache)) in julia_environments
+        for (config, (install,cache)) in instantiated_configs
             rm(install; recursive=true)
             uid = ccall(:getuid, Cint, ())
             gid = ccall(:getgid, Cint, ())
@@ -726,21 +744,25 @@ function run(julia_versions::Vector{VersionNumber}, pkgs::Vector;
 end
 
 """
-    run(julia_versions::Vector{VersionNumber}=[Base.VERSION],
+    run(configs::Vector{Configuration}=[Configuration()],
         pkg_names::Vector{String}=[]]; registry=General, update_registry=true, kwargs...)
 
 Run all tests for all packages in the registry `registry`, or only for the packages as
-identified by their name in `pkgnames`, using Julia versions `julia_versions`.
+identified by their name in `pkgnames`, using the configurations from `configs`.
 The registry is first updated if `update_registry` is set to true.
 
 Refer to `run_sandboxed_test`[@ref] and `run_sandboxed_julia`[@ref] for more possible
 keyword arguments.
 """
-function run(julia_versions::Vector{VersionNumber}=[Base.VERSION],
+function run(configs::Vector{Configuration}=[Configuration()],
              pkg_names::Vector{String}=String[];
              registry::String=DEFAULT_REGISTRY, update_registry::Bool=true, kwargs...)
     prepare_registry(registry; update=update_registry)
     pkgs = read_pkgs(pkg_names)
 
-    run(julia_versions, pkgs; kwargs...)
+    run(configs, pkgs; kwargs...)
 end
+
+run(julia_versions::Vector{VersionNumber}, args...; kwargs...) =
+    run([Configuration(julia=julia_version) for julia_version in julia_versions], args...;
+        kwargs...)
