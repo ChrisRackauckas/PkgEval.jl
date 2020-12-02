@@ -35,8 +35,9 @@ function run_sandboxed_julia(install::String, args=``; wait=true,
     Base.run(pipeline(cmd, stdin=stdin, stdout=stdout, stderr=stderr); wait=wait)
 end
 
-function runner_sandboxed_julia(install::String, args=``; interactive=true, tty=true, name=nothing,
-                                cpus::Vector{Int}=Int[], tmpfs::Bool=true, cache=nothing, storage=nothing)
+function runner_sandboxed_julia(install::String, args=``; interactive=true, tty=true,
+                                name=nothing, cpus::Vector{Int}=Int[], tmpfs::Bool=true,
+                                storage=nothing, cache=nothing, sysimage=nothing)
     cmd = `docker run`
 
     # expose any available GPUs if they are available
@@ -68,6 +69,10 @@ function runner_sandboxed_julia(install::String, args=``; interactive=true, tty=
 
     if cache !== nothing
         cmd = `$cmd --mount type=bind,source=$cache,target=/cache`
+    end
+
+    if sysimage !== nothing
+        args = `--sysimage=$sysimage $args`
     end
 
     # mount working directory in tmpfs
@@ -114,7 +119,8 @@ directory.
 Refer to `run_sandboxed_julia`[@ref] for more possible `keyword arguments.
 """
 function run_sandboxed_test(install::String, pkg; log_limit = 2^20 #= 1 MB =#,
-                            time_limit = 60*60, do_depwarns=false, kwargs...)
+                            time_limit = 60*60, do_depwarns=false,
+                            kwargs...)
     # prepare for launching a container
     container = "$(pkg.name)-$(randstring(8))"
     script = raw"""
@@ -138,12 +144,12 @@ function run_sandboxed_test(install::String, pkg; log_limit = 2^20 #= 1 MB =#,
 
             print("\n\n", '#'^80, "\n# Installation: $(now())\n#\n\n")
 
-            Pkg.add(ARGS...)
+            Pkg.add(ARGS[1])
 
 
             print("\n\n", '#'^80, "\n# Testing: $(now())\n#\n\n\n")
 
-            Pkg.test(ARGS...)
+            Pkg.test(ARGS[1])
 
             println("\nPkgEval succeeded")
         catch err
@@ -164,16 +170,15 @@ function run_sandboxed_test(install::String, pkg; log_limit = 2^20 #= 1 MB =#,
     output = Pipe()
 
     function stop()
-        close(output)   # XXX: docker run sometimes hangs after container exit,
-                        #      maybe that's because of stream blocking?
+        close(output)
         kill_container(container)
     end
 
-    # XXX: docker run sometimes hangs, maybe that's because of racy operations?
     container_lock = ReentrantLock()
 
-    p = run_sandboxed_julia(install, cmd; stdout=output, stderr=output, stdin=input,
-                            tty=false, wait=false, name=container, kwargs...)
+    p = run_sandboxed_julia(install, cmd; name=container, tty=false, wait=false,
+                                          stdout=output, stderr=output, stdin=input,
+                                          kwargs...)
 
     # pass the script over standard input to avoid exceeding max command line size,
     # and keep the process listing somewhat clean
@@ -342,6 +347,90 @@ function run_sandboxed_test(install::String, pkg; log_limit = 2^20 #= 1 MB =#,
     end
 
     return version, status, reason, log
+end
+
+"""
+    run_compiled_test(install::String, pkg; compile_time_limit=60*60)
+
+Run the unit tests for a single package `pkg` (see `run_compiled_test`[@ref] for details and
+a list of supported keyword arguments), after first having compiled a system image that
+contains this package and its dependencies.
+"""
+function run_compiled_test(install::String, pkg; compile_time_limit=10*60, cache, kwargs...)
+    # prepare for launching a container
+    container = "$(pkg.name)-$(randstring(8))"
+    sysimage_path = "/cache/$(container).so"
+    script = raw"""
+        using Dates
+        print('#'^80, "\n# PackageCompiler set-up: $(now())\n#\n\n")
+
+        using InteractiveUtils
+        versioninfo()
+        println()
+
+        mkpath(".julia")
+
+        # global storage of downloaded artifacts
+        mkpath("/storage/artifacts")
+        symlink("/storage/artifacts", ".julia/artifacts")
+
+        using Pkg
+        Pkg.UPDATED_REGISTRY_THIS_SESSION[] = true
+
+
+        print("\n\n", '#'^80, "\n# Installation: $(now())\n#\n\n")
+
+        Pkg.add(["PackageCompiler", ARGS[1]])
+
+
+        print("\n\n", '#'^80, "\n# Compiling: $(now())\n#\n\n\n")
+
+        using PackageCompiler
+
+        create_sysimage(Symbol(ARGS[1]), sysimage_path=ARGS[2])
+    """
+    cmd = `-e $script $(pkg.name) $sysimage_path`
+
+    output = Pipe()
+
+    function stop()
+        close(output)
+        kill_container(container)
+    end
+
+    container_lock = ReentrantLock()
+
+    p = run_sandboxed_julia(install, cmd; stdout=output, stderr=output,
+                            tty=false, wait=false, name=container, cache=cache, kwargs...)
+
+    # kill on timeout
+    t = Timer(compile_time_limit) do timer
+        lock(container_lock) do
+            process_running(p) || return
+            stop()
+        end
+    end
+
+    # collect output and stats
+    t2 = @async begin
+        io = IOBuffer()
+        while process_running(p) && isopen(output)
+            line = readline(output)
+            println(io, line)
+        end
+        return String(take!(io))
+    end
+
+    wait(p)
+    close(t)
+    close(output)
+    log = fetch(t2)
+
+    if !success(p)
+        return missing, :fail, :uncompilable, log
+    end
+
+    return run_sandboxed_test(install, pkg; sysimage=sysimage_path, cache=cache, kwargs...)
 end
 
 function query_container(container)
