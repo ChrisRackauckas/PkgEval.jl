@@ -482,7 +482,7 @@ function run(julia_versions::Vector{VersionNumber}, pkgs::Vector;
     for (julia, (install,cache)) in julia_environments
         Base.run(```docker run --mount type=bind,source=$storage,target=/storage
                                --mount type=bind,source=$cache,target=/cache
-                               ubuntu
+                               newpkgeval:ubuntu
                                sudo chown -R pkgeval:pkgeval /storage /cache```)
     end
 
@@ -716,7 +716,7 @@ function run(julia_versions::Vector{VersionNumber}, pkgs::Vector;
             uid = ccall(:getuid, Cint, ())
             gid = ccall(:getgid, Cint, ())
             Base.run(```docker run --mount type=bind,source=$cache,target=/cache
-                                   ubuntu
+                                   newpkgeval:ubuntu
                                    sudo chown -R $uid:$gid /cache```)
             rm(cache; recursive=true)
         end
