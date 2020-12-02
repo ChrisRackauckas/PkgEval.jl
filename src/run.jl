@@ -1,10 +1,12 @@
 function prepare_runner()
-    cd(joinpath(dirname(@__DIR__), "runner")) do
-        cmd = `docker build --tag newpkgeval .`
-        if !isdebug(:docker)
-            cmd = pipeline(cmd, stdout=devnull, stderr=devnull)
+    for runner in ("ubuntu", "arch")
+        cd(joinpath(dirname(@__DIR__), "runner.$runner")) do
+            cmd = `docker build --tag newpkgeval:$runner .`
+            if !isdebug(:docker)
+                cmd = pipeline(cmd, stdout=devnull, stderr=devnull)
+            end
+            Base.run(cmd)
         end
-        Base.run(cmd)
     end
 
     return
@@ -37,7 +39,8 @@ end
 
 function runner_sandboxed_julia(install::String, args=``; interactive=true, tty=true,
                                 name=nothing, cpus::Vector{Int}=Int[], tmpfs::Bool=true,
-                                storage=nothing, cache=nothing, sysimage=nothing)
+                                storage=nothing, cache=nothing, sysimage=nothing,
+                                runner="ubuntu")
     cmd = `docker run`
 
     # expose any available GPUs if they are available
@@ -100,7 +103,7 @@ function runner_sandboxed_julia(install::String, args=``; interactive=true, tty=
         cmd = `$cmd --name $name`
     end
 
-    `$cmd --rm newpkgeval xvfb-run /opt/julia/bin/julia $args`
+    `$cmd --rm newpkgeval:$runner xvfb-run /opt/julia/bin/julia $args`
 end
 
 """
@@ -355,6 +358,9 @@ end
 Run the unit tests for a single package `pkg` (see `run_compiled_test`[@ref] for details and
 a list of supported keyword arguments), after first having compiled a system image that
 contains this package and its dependencies.
+
+To find incompatibilities, the compilation happens on an Ubuntu-based runner, while testing
+is performed in an Arch Linux container.
 """
 function run_compiled_test(install::String, pkg; compile_time_limit=10*60, cache, kwargs...)
     # prepare for launching a container
@@ -400,7 +406,7 @@ function run_compiled_test(install::String, pkg; compile_time_limit=10*60, cache
 
     container_lock = ReentrantLock()
 
-    p = run_sandboxed_julia(install, cmd; stdout=output, stderr=output,
+    p = run_sandboxed_julia(install, cmd; runner="ubuntu", stdout=output, stderr=output,
                             tty=false, wait=false, name=container, cache=cache, kwargs...)
 
     # kill on timeout
@@ -430,7 +436,8 @@ function run_compiled_test(install::String, pkg; compile_time_limit=10*60, cache
         return missing, :fail, :uncompilable, log
     end
 
-    return run_sandboxed_test(install, pkg; sysimage=sysimage_path, cache=cache, kwargs...)
+    return run_sandboxed_test(install, pkg; runner="arch", sysimage=sysimage_path,
+                              cache=cache, kwargs...)
 end
 
 function query_container(container)
@@ -475,7 +482,7 @@ function run(julia_versions::Vector{VersionNumber}, pkgs::Vector;
     for (julia, (install,cache)) in julia_environments
         Base.run(```docker run --mount type=bind,source=$storage,target=/storage
                                --mount type=bind,source=$cache,target=/cache
-                               newpkgeval
+                               ubuntu
                                sudo chown -R pkgeval:pkgeval /storage /cache```)
     end
 
@@ -709,7 +716,7 @@ function run(julia_versions::Vector{VersionNumber}, pkgs::Vector;
             uid = ccall(:getuid, Cint, ())
             gid = ccall(:getgid, Cint, ())
             Base.run(```docker run --mount type=bind,source=$cache,target=/cache
-                                   newpkgeval
+                                   ubuntu
                                    sudo chown -R $uid:$gid /cache```)
             rm(cache; recursive=true)
         end
