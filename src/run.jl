@@ -360,7 +360,7 @@ function run_sandboxed_test(install::String, pkg; log_limit = 2^20 #= 1 MB =#,
 end
 
 """
-    run_compiled_test(install::String, pkg; compile_time_limit=60*60)
+    run_compiled_test(install::String, pkg; compile_time_limit=30*60)
 
 Run the unit tests for a single package `pkg` (see `run_compiled_test`[@ref] for details and
 a list of supported keyword arguments), after first having compiled a system image that
@@ -369,7 +369,7 @@ contains this package and its dependencies.
 To find incompatibilities, the compilation happens on an Ubuntu-based runner, while testing
 is performed in an Arch Linux container.
 """
-function run_compiled_test(install::String, pkg; compile_time_limit=10*60, cache, kwargs...)
+function run_compiled_test(install::String, pkg; compile_time_limit=30*60, cache, kwargs...)
     # prepare for launching a container
     container = "$(pkg.name)-$(randstring(8))"
     sysimage_path = "/cache/$(container).so"
