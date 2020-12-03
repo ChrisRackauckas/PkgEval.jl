@@ -3,8 +3,6 @@ FROM ubuntu:20.04
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install --no-install-recommends -y \
-    # container tools
-    dumb-init \
     # download engines
     curl ca-certificates \
     # essential tools
@@ -24,5 +22,3 @@ RUN mkdir /storage /cache && \
 
 WORKDIR /home/pkgeval
 USER pkgeval
-
-ENTRYPOINT ["/usr/bin/dumb-init", "--"]

@@ -43,7 +43,7 @@ function runner_sandboxed_julia(install::String, args=``; interactive=true, tty=
                                 name=nothing, cpus::Vector{Int}=Int[], tmpfs::Bool=true,
                                 storage=nothing, cache=nothing, sysimage=nothing,
                                 runner="ubuntu", depot="/home/pkgeval/.julia",
-                                xvfb::Bool=true)
+                                xvfb::Bool=true, init::Bool=true)
     cmd = `docker run`
 
     # expose any available GPUs if they are available
@@ -104,6 +104,10 @@ function runner_sandboxed_julia(install::String, args=``; interactive=true, tty=
 
     if name !== nothing
         cmd = `$cmd --name $name`
+    end
+
+    if init
+        cmd = `$cmd --init`
     end
 
     if xvfb
