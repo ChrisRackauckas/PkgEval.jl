@@ -42,8 +42,9 @@ end
 function runner_sandboxed_julia(install::String, args=``; interactive=true, tty=true,
                                 name=nothing, cpus::Vector{Int}=Int[], tmpfs::Bool=true,
                                 storage=nothing, cache=nothing, sysimage=nothing,
-                                runner="ubuntu", depot="/home/pkgeval/.julia",
-                                xvfb::Bool=true, init::Bool=true)
+                                depot="/home/pkgeval/.julia", install_dir="/opt/julia",
+                                xvfb::Bool=true, init::Bool=true,
+                                runner="ubuntu")
     ## Docker args
 
     cmd = `docker run --rm`
@@ -58,7 +59,7 @@ function runner_sandboxed_julia(install::String, args=``; interactive=true, tty=
     @assert isdir(julia_path)
     registry_path = registry_dir()
     @assert isdir(registry_path)
-    cmd = ```$cmd --mount type=bind,source=$julia_path,target=/opt/julia,readonly
+    cmd = ```$cmd --mount type=bind,source=$julia_path,target=$install_dir,readonly
                   --mount type=bind,source=$registry_path,target=/usr/local/share/julia/registries,readonly
                   --env JULIA_DEPOT_PATH="$depot:/usr/local/share/julia"
                   --env JULIA_PKG_SERVER
@@ -111,9 +112,9 @@ function runner_sandboxed_julia(install::String, args=``; interactive=true, tty=
     end
 
     if xvfb
-        `$cmd $depot xvfb-run /opt/julia/bin/julia $args`
+        `$cmd $depot xvfb-run $install_dir/bin/julia $args`
     else
-        `$cmd $depot /opt/julia/bin/julia $args`
+        `$cmd $depot $install_dir/bin/julia $args`
     end
 end
 
@@ -145,6 +146,8 @@ function run_sandboxed_test(install::String, pkg; log_limit = 2^20 #= 1 MB =#,
             using InteractiveUtils
             versioninfo()
             println()
+
+            @show Base.julia_cmd()
 
             using Pkg
             Pkg.UPDATED_REGISTRY_THIS_SESSION[] = true
@@ -405,7 +408,7 @@ function run_compiled_test(install::String, pkg; compile_time_limit=30*60, cache
 
     container_lock = ReentrantLock()
 
-    p = run_sandboxed_julia(install, cmd; runner="ubuntu", stdout=output, stderr=output,
+    p = run_sandboxed_julia(install, cmd; stdout=output, stderr=output,
                             tty=false, wait=false, name=container, cache=cache, xvfb=false,
                             kwargs...)
 
@@ -436,8 +439,12 @@ function run_compiled_test(install::String, pkg; compile_time_limit=30*60, cache
         return missing, :fail, :uncompilable, log
     end
 
-    return run_sandboxed_test(install, pkg; runner="arch", sysimage=sysimage_path,
-                              depot="/home/pkgeval/.another_julia", cache=cache, kwargs...)
+    # run the tests in an alternate environment (different OS, depot and Julia binaries
+    # in another path, etc)
+    return run_sandboxed_test(install, pkg; runner="arch",
+                              cache=cache, sysimage=sysimage_path,
+                              depot="/home/pkgeval/.another_julia",
+                              install_dir="/usr/local/julia", kwargs...)
 end
 
 function query_container(container)
