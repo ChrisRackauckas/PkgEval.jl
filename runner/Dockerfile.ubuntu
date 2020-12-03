@@ -22,3 +22,6 @@ RUN mkdir /storage /cache && \
 
 WORKDIR /home/pkgeval
 USER pkgeval
+
+COPY ./entrypoint.sh /
+ENTRYPOINT ["/entrypoint.sh"]

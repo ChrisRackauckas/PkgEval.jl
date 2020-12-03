@@ -1,9 +1,9 @@
 export Configuration
 
 function prepare_runner()
-    for runner in ("ubuntu", "arch")
-        cd(joinpath(dirname(@__DIR__), "runner.$runner")) do
-            cmd = `docker build --tag newpkgeval:$runner .`
+    cd(joinpath(dirname(@__DIR__), "runner")) do
+        for runner in ("ubuntu", "arch")
+            cmd = `docker build --tag newpkgeval:$runner --file Dockerfile.$runner .`
             if !isdebug(:docker)
                 cmd = pipeline(cmd, stdout=devnull, stderr=devnull)
             end
@@ -44,7 +44,9 @@ function runner_sandboxed_julia(install::String, args=``; interactive=true, tty=
                                 storage=nothing, cache=nothing, sysimage=nothing,
                                 runner="ubuntu", depot="/home/pkgeval/.julia",
                                 xvfb::Bool=true, init::Bool=true)
-    cmd = `docker run`
+    ## Docker args
+
+    cmd = `docker run --rm`
 
     # expose any available GPUs if they are available
     if find_library("libcuda") != ""
@@ -59,15 +61,8 @@ function runner_sandboxed_julia(install::String, args=``; interactive=true, tty=
     cmd = ```$cmd --mount type=bind,source=$julia_path,target=/opt/julia,readonly
                   --mount type=bind,source=$registry_path,target=/usr/local/share/julia/registries,readonly
                   --env JULIA_DEPOT_PATH="$depot:/usr/local/share/julia"
-                  --env JULIA_PKG_PRECOMPILE_AUTO=0
                   --env JULIA_PKG_SERVER
           ```
-
-    # allow identification of PkgEval
-    cmd = `$cmd --env CI=true --env PKGEVAL=true --env JULIA_PKGEVAL=true`
-
-    # disable system discovery of Python and R
-    cmd = `$cmd --env PYTHON="" --env R_HOME="*"`
 
     if storage !== nothing
         cmd = `$cmd --mount type=bind,source=$storage,target=/storage`
@@ -75,10 +70,6 @@ function runner_sandboxed_julia(install::String, args=``; interactive=true, tty=
 
     if cache !== nothing
         cmd = `$cmd --mount type=bind,source=$cache,target=/cache`
-    end
-
-    if sysimage !== nothing
-        args = `--sysimage=$sysimage $args`
     end
 
     # mount working directory in tmpfs
@@ -110,10 +101,19 @@ function runner_sandboxed_julia(install::String, args=``; interactive=true, tty=
         cmd = `$cmd --init`
     end
 
+    cmd = `$cmd newpkgeval:$runner`
+
+
+    ## Julia args
+
+    if sysimage !== nothing
+        args = `--sysimage=$sysimage $args`
+    end
+
     if xvfb
-        `$cmd --rm newpkgeval:$runner xvfb-run /opt/julia/bin/julia $args`
+        `$cmd $depot xvfb-run /opt/julia/bin/julia $args`
     else
-        `$cmd --rm newpkgeval:$runner /opt/julia/bin/julia $args`
+        `$cmd $depot /opt/julia/bin/julia $args`
     end
 end
 
@@ -145,12 +145,6 @@ function run_sandboxed_test(install::String, pkg; log_limit = 2^20 #= 1 MB =#,
             using InteractiveUtils
             versioninfo()
             println()
-
-            mkpath(first(DEPOT_PATH))
-
-            # global storage of downloaded artifacts
-            mkpath("/storage/artifacts")
-            symlink("/storage/artifacts", joinpath(first(DEPOT_PATH), "artifacts"))
 
             using Pkg
             Pkg.UPDATED_REGISTRY_THIS_SESSION[] = true
@@ -385,12 +379,6 @@ function run_compiled_test(install::String, pkg; compile_time_limit=30*60, cache
         versioninfo()
         println()
 
-        mkpath(first(DEPOT_PATH))
-
-        # global storage of downloaded artifacts
-        mkpath("/storage/artifacts")
-        symlink("/storage/artifacts", joinpath(first(DEPOT_PATH), "artifacts"))
-
         using Pkg
         Pkg.UPDATED_REGISTRY_THIS_SESSION[] = true
 
@@ -504,6 +492,7 @@ function run(configs::Vector{Configuration}, pkgs::Vector;
     for (config, (install,cache)) in instantiated_configs
         Base.run(```docker run --mount type=bind,source=$storage,target=/storage
                                --mount type=bind,source=$cache,target=/cache
+                               --entrypoint=''
                                newpkgeval:ubuntu
                                sudo chown -R pkgeval:pkgeval /storage /cache```)
     end
@@ -744,6 +733,7 @@ function run(configs::Vector{Configuration}, pkgs::Vector;
             uid = ccall(:getuid, Cint, ())
             gid = ccall(:getgid, Cint, ())
             Base.run(```docker run --mount type=bind,source=$cache,target=/cache
+                                   --entrypoint=''
                                    newpkgeval:ubuntu
                                    sudo chown -R $uid:$gid /cache```)
             rm(cache; recursive=true)
