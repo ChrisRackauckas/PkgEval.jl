@@ -1,24 +1,24 @@
 using PkgEval
 using Test
 
-# determine the version to use
-const version = get(ENV, "JULIA_VERSION", string(VERSION))
-@info "Testing with Julia $version"
-const julia = PkgEval.obtain_julia(version)::VersionNumber
-@info "Resolved to Julia v$julia"
-const install = PkgEval.prepare_julia(julia)
+# determine which Julia to use
+const julia_spec = get(ENV, "JULIA_SPEC", string(VERSION))
+@info "Testing with Julia $julia_spec"
+const julia_version = PkgEval.obtain_julia(julia_spec)::VersionNumber
+@info "Resolved to Julia v$julia_version"
+const julia_install = PkgEval.prepare_julia(julia_version)
 
 @testset "sandbox" begin
     PkgEval.prepare_runner()
     mktemp() do path, io
-        PkgEval.run_sandboxed_julia(install, `-e 'print(1337)'`; stdout=io,
+        PkgEval.run_sandboxed_julia(julia_install, `-e 'print(1337)'`; stdout=io,
                                        tty=false, interactive=false)
         close(io)
         @test read(path, String) == "1337"
     end
 
     # print versioninfo so we can verify in CI logs that the correct version is used
-    PkgEval.run_sandboxed_julia(install, `-e 'using InteractiveUtils; versioninfo()'`;
+    PkgEval.run_sandboxed_julia(julia_install, `-e 'using InteractiveUtils; versioninfo()'`;
                                    tty=false, interactive=false)
 end
 
@@ -30,13 +30,23 @@ const pkgnames = ["TimerOutputs", "Crayons", "Example", "Gtk"]
     pkgs = PkgEval.read_pkgs(pkgnames)
 
     # timeouts
-    results = PkgEval.run([julia], pkgs; time_limit = 0.1)
+    results = PkgEval.run([Configuration(julia=julia_version)], pkgs; time_limit = 0.1)
     @test all(results.status .== :kill)
 end
 
 @testset "main entrypoint" begin
-    results = PkgEval.run([julia], pkgnames)
-    if !(version == "master" || version == "nightly")
+    results = PkgEval.run([Configuration(julia=julia_version)], pkgnames)
+    if !(julia_spec == "master" || julia_spec == "nightly")
+        @test all(results.status .== :ok)
+        for result in eachrow(results)
+            @test occursin("Testing $(result.name) tests passed", result.log)
+        end
+    end
+end
+
+@testset "PackageCompiler" begin
+    results = PkgEval.run([Configuration(julia=julia_version, compiled=true)], ["Example"])
+    if !(julia_spec == "master" || julia_spec == "nightly")
         @test all(results.status .== :ok)
         for result in eachrow(results)
             @test occursin("Testing $(result.name) tests passed", result.log)
@@ -52,4 +62,4 @@ end
 end
 
 PkgEval.purge()
-rm(install; recursive=true)
+rm(julia_install; recursive=true)
