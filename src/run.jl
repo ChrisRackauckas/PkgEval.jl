@@ -1,5 +1,8 @@
 export Configuration
 
+uid() = ccall(:getuid, Cint, ())
+gid() = ccall(:getgid, Cint, ())
+
 function prepare_runner()
     cd(joinpath(dirname(@__DIR__), "runner")) do
         for runner in ("ubuntu", "arch")
@@ -105,17 +108,16 @@ function runner_sandboxed_julia(install::String, args=``; interactive=true, tty=
     ## Entrypoint script args
 
     # use the current user and group ID to ensure cache and storage are writable
-    uid = ccall(:getuid, Cint, ())
-    gid = ccall(:getgid, Cint, ())
-    if uid < 1000 || gid < 1000
+    container_uid = uid()
+    container_gid = gid()
+    if container_uid < 1000 || container_gid < 1000
         # system ids might conflict with groups/users in the container
-        @warn "You are running PkgEval as a system user (with id $uid:$gid); this is not compatible with the container set-up.
-               I will be using id 1000:1000, but that means the cache and storage on the host file system will not be owned by you."
-        uid = 1000
-        gid = 1000
+        # TODO: can we use userns-remap?
+        @warn """"You are running PkgEval as a system user (with id $uid:$gid); this is not compatible with the container set-up.
+                  I will be using id 1000:1000, but that means the cache and storage on the host file system will not be owned by you."""
     end
 
-    cmd = `$cmd $user $uid $group $gid`
+    cmd = `$cmd $user $container_uid $group $container_gid`
 
 
     ## Julia args
@@ -746,7 +748,11 @@ function run(configs::Vector{Configuration}, pkgs::Vector;
         # clean-up
         for (config, (install,cache)) in instantiated_configs
             rm(install; recursive=true)
-            rm(cache; recursive=true)
+            if uid() < 1000 || gid() < 1000
+                @warn "Cannot remove cache due to running as system user or group"
+            else
+                rm(cache; recursive=true)
+            end
         end
     end
 
