@@ -12,14 +12,7 @@ RUN pacman -Suy --noconfirm --needed \
     # clean-up
     && find /var/cache/pacman/ -type f -delete
 
-RUN useradd --create-home --shell /bin/bash --groups wheel pkgeval && \
-    echo '%wheel ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
-
-RUN mkdir /storage /cache && \
-    chown pkgeval /storage /cache
-
-WORKDIR /home/pkgeval
-USER pkgeval
+RUN mkdir /storage /cache
 
 COPY ./entrypoint.sh /
 ENTRYPOINT ["/entrypoint.sh"]

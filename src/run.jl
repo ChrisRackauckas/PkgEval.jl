@@ -42,9 +42,9 @@ end
 function runner_sandboxed_julia(install::String, args=``; interactive=true, tty=true,
                                 name=nothing, cpus::Vector{Int}=Int[], tmpfs::Bool=true,
                                 storage=nothing, cache=nothing, sysimage=nothing,
-                                depot="/home/pkgeval/.julia", install_dir="/opt/julia",
                                 xvfb::Bool=true, init::Bool=true,
-                                runner="ubuntu")
+                                runner="ubuntu", user="pkgeval", group="pkgeval",
+                                install_dir="/opt/julia")
     ## Docker args
 
     cmd = `docker run --rm`
@@ -61,7 +61,7 @@ function runner_sandboxed_julia(install::String, args=``; interactive=true, tty=
     @assert isdir(registry_path)
     cmd = ```$cmd --mount type=bind,source=$julia_path,target=$install_dir,readonly
                   --mount type=bind,source=$registry_path,target=/usr/local/share/julia/registries,readonly
-                  --env JULIA_DEPOT_PATH="$depot:/usr/local/share/julia"
+                  --env JULIA_DEPOT_PATH="::/usr/local/share/julia"
                   --env JULIA_PKG_SERVER
           ```
 
@@ -75,10 +75,7 @@ function runner_sandboxed_julia(install::String, args=``; interactive=true, tty=
 
     # mount working directory in tmpfs
     if tmpfs
-        cmd = `$cmd --tmpfs /home/pkgeval:exec,uid=1000,gid=1000`
-        # FIXME: tmpfs mounts don't copy uid/gid back, so we need to correct this manually
-        #        https://github.com/opencontainers/runc/issues/1647
-        # FIXME: this also breaks mounting artifacts in the depot directly
+        cmd = `$cmd --tmpfs /home/$user:exec`
     end
 
     # restrict resource usage
@@ -105,6 +102,22 @@ function runner_sandboxed_julia(install::String, args=``; interactive=true, tty=
     cmd = `$cmd newpkgeval:$runner`
 
 
+    ## Entrypoint script args
+
+    # use the current user and group ID to ensure cache and storage are writable
+    uid = ccall(:getuid, Cint, ())
+    gid = ccall(:getgid, Cint, ())
+    if uid < 1000 || gid < 1000
+        # system ids might conflict with groups/users in the container
+        @warn "You are running PkgEval as a system user (with id $uid:$gid); this is not compatible with the container set-up.
+               I will be using id 1000:1000, but that means the cache and storage on the host file system will not be owned by you."
+        uid = 1000
+        gid = 1000
+    end
+
+    cmd = `$cmd $user $uid $group $gid`
+
+
     ## Julia args
 
     if sysimage !== nothing
@@ -112,9 +125,9 @@ function runner_sandboxed_julia(install::String, args=``; interactive=true, tty=
     end
 
     if xvfb
-        `$cmd $depot xvfb-run $install_dir/bin/julia $args`
+        `$cmd xvfb-run $install_dir/bin/julia $args`
     else
-        `$cmd $depot $install_dir/bin/julia $args`
+        `$cmd $install_dir/bin/julia $args`
     end
 end
 
@@ -443,7 +456,7 @@ function run_compiled_test(install::String, pkg; compile_time_limit=30*60, cache
     # in another path, etc)
     return run_sandboxed_test(install, pkg; runner="arch",
                               cache=cache, sysimage=sysimage_path,
-                              depot="/home/pkgeval/.another_julia",
+                              user="user", group="group",
                               install_dir="/usr/local/julia", kwargs...)
 end
 
@@ -494,15 +507,6 @@ function run(configs::Vector{Configuration}, pkgs::Vector;
     # global storage
     storage = storage_dir()
     mkpath(storage)
-
-    # make sure data is writable
-    for (config, (install,cache)) in instantiated_configs
-        Base.run(```docker run --mount type=bind,source=$storage,target=/storage
-                               --mount type=bind,source=$cache,target=/cache
-                               --entrypoint=''
-                               newpkgeval:ubuntu
-                               sudo chown -R pkgeval:pkgeval /storage /cache```)
-    end
 
     # ensure we can use Docker's API
     info = let
@@ -737,12 +741,6 @@ function run(configs::Vector{Configuration}, pkgs::Vector;
         # clean-up
         for (config, (install,cache)) in instantiated_configs
             rm(install; recursive=true)
-            uid = ccall(:getuid, Cint, ())
-            gid = ccall(:getgid, Cint, ())
-            Base.run(```docker run --mount type=bind,source=$cache,target=/cache
-                                   --entrypoint=''
-                                   newpkgeval:ubuntu
-                                   sudo chown -R $uid:$gid /cache```)
             rm(cache; recursive=true)
         end
     end
