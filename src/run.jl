@@ -171,7 +171,7 @@ function run_sandboxed_test(install::String, pkg; log_limit = 2^20 #= 1 MB =#,
             Pkg.add(ARGS[1])
 
 
-            print("\n\n", '#'^80, "\n# Testing: $(now())\n#\n\n\n")
+            print("\n\n", '#'^80, "\n# Testing: $(now())\n#\n\n")
 
             Pkg.test(ARGS[1])
 
@@ -404,11 +404,14 @@ function run_compiled_test(install::String, pkg; compile_time_limit=30*60, cache
         Pkg.add(["PackageCompiler", ARGS[1]])
 
 
-        print("\n\n", '#'^80, "\n# Compiling: $(now())\n#\n\n\n")
+        print("\n\n", '#'^80, "\n# Compiling: $(now())\n#\n\n")
 
         using PackageCompiler
 
-        create_sysimage(Symbol(ARGS[1]), sysimage_path=ARGS[2])
+        t = @elapsed create_sysimage(Symbol(ARGS[1]), sysimage_path=ARGS[2])
+        s = stat(ARGS[2]).size
+
+        println("Generated system image is ", Base.format_bytes(s), ", compilation took ", trunc(Int, t), " seconds")
     """
     cmd = `-e $script $(pkg.name) $sysimage_path`
 
@@ -454,10 +457,12 @@ function run_compiled_test(install::String, pkg; compile_time_limit=30*60, cache
 
     # run the tests in an alternate environment (different OS, depot and Julia binaries
     # in another path, etc)
-    return run_sandboxed_test(install, pkg; runner="arch",
-                              cache=cache, sysimage=sysimage_path,
-                              user="user", group="group",
-                              install_dir="/usr/local/julia", kwargs...)
+    version, status, reason, test_log =
+        run_sandboxed_test(install, pkg; runner="arch",
+                           cache=cache, sysimage=sysimage_path,
+                           user="user", group="group",
+                           install_dir="/usr/local/julia", kwargs...)
+    return version, status, reason, log * "\n" * test_log
 end
 
 function query_container(container)
