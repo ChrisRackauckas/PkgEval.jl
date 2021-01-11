@@ -33,6 +33,9 @@ ln -s /storage/artifacts /home/$USER/.julia/artifacts
 
 # run the command
 
+# discover libraries (which may be mounted at run time, e.g., libcuda by the Docker runtime)
+ldconfig
+
 cd /home/$USER
 sudo --user $USER --set-home \
     CI=true PKGEVAL=true JULIA_PKGEVAL=true \
