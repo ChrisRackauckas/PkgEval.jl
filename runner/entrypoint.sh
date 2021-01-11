@@ -18,7 +18,7 @@ mkdir -p /home/$USER
 chown $USER:$GROUP /home/$USER
 
 # make the storage and cache writable, in case we didn't mount one
-chown $USER /storage /cache
+chown $USER:$GROUP /storage /cache
 
 
 # prepare the depot
@@ -27,6 +27,7 @@ mkdir /home/$USER/.julia
 chown $USER:$GROUP /home/$USER/.julia
 
 mkdir -p /storage/artifacts
+chown $USER:$GROUP /storage/artifacts
 ln -s /storage/artifacts /home/$USER/.julia/artifacts
 
 
